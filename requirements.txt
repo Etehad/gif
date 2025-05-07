@@ -3,3 +3,4 @@ pillow
 imageio
 requests
 gunicorn
+moviepy

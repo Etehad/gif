@@ -41,7 +41,7 @@ def add_text_to_video():
 
     try:
         clip = VideoFileClip(video_path)
-        txt = TextClip(text, fontsize=36, font="/app/fonts/Shabnam.ttf", color='white', method='caption', size=(clip.w, None))
+        txt = TextClip(text, fontsize=36, font="/gif/fonts/Shabnam.ttf", color='white', method='caption', size=(clip.w, None))
         txt = txt.set_duration(clip.duration).set_position(("center", "bottom"))
         result = CompositeVideoClip([clip, txt])
         fps = clip.fps if hasattr(clip, "fps") and clip.fps else 24

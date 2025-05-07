@@ -1,4 +1,6 @@
 from flask import Flask, request, send_file
+import imageio
+imageio.plugins.ffmpeg.download()
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
 import requests
 import tempfile

@@ -1,4 +1,6 @@
 from flask import Flask, request, send_file, after_this_request
+import moviepy
+print("MoviePy version:", moviepy.__version__)
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
 import requests
 import tempfile

@@ -1,5 +1,4 @@
-from flask import Flask, request, send_file
-import imageio
+from flask import Flask, request, send_file, after_this_request
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
 import requests
 import tempfile
@@ -15,7 +14,7 @@ def add_text_to_video():
     if not video_url or not text:
         return {'error': 'url and text required'}, 400
 
-    # دانلود فایل MP4
+    # دانلود و ذخیره فایل ویدیو
     response = requests.get(video_url)
     if response.status_code != 200:
         return {'error': 'Download failed'}, 400
@@ -24,19 +23,29 @@ def add_text_to_video():
         tmp.write(response.content)
         video_path = tmp.name
 
-    # باز کردن ویدیو
-    clip = VideoFileClip(video_path)
+    # خروجی
+    output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+    output_path = output_file.name
+    output_file.close()
 
-    # ساخت متن
-    txt = TextClip(text, fontsize=36, font="Shabnam", color='white', method='caption', size=(clip.w, None))
-    txt = txt.set_duration(clip.duration).set_position(("center", "bottom"))
+    try:
+        clip = VideoFileClip(video_path)
+        txt = TextClip(text, fontsize=36, font="Shabnam", color='white', method='caption', size=(clip.w, None))
+        txt = txt.set_duration(clip.duration).set_position(("center", "bottom"))
+        result = CompositeVideoClip([clip, txt])
+        fps = clip.fps if hasattr(clip, "fps") and clip.fps else 24
+        result.write_videofile(output_path, codec='libx264', audio=False, fps=fps)
+    except Exception as e:
+        return {'error': str(e)}, 500
 
-    # اضافه کردن متن
-    result = CompositeVideoClip([clip, txt])
-
-    # ذخیره خروجی
-    output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-    result.write_videofile(output_path, codec='libx264', audio=False, fps=clip.fps)
+    @after_this_request
+    def cleanup(response):
+        try:
+            os.remove(video_path)
+            os.remove(output_path)
+        except:
+            pass
+        return response
 
     return send_file(output_path, mimetype='video/mp4')
 

@@ -1,6 +1,4 @@
-flask
-pillow
-imageio
+Flask
 requests
-gunicorn
 moviepy
+imageio[ffmpeg]

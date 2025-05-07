@@ -1,93 +1,150 @@
-import logging
-import subprocess
-from flask import Flask, request, send_file, after_this_request
-import moviepy
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
+from flask import Flask, request, send_file
 import requests
-import tempfile
 import os
-
-logging.basicConfig(level=logging.DEBUG)
-logging.info(f"MoviePy version: {moviepy.__version__}")
+import logging
+import tempfile
+from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
+import subprocess
 
 app = Flask(__name__)
 
+# تنظیم لاگ‌گیری
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 @app.route('/add_text_to_video', methods=['GET'])
 def add_text_to_video():
-    video_url = request.args.get('url')
-    text = request.args.get('text')
-    logging.info(f"Processing request: url={video_url}, text={text}")
-
-    if not video_url or not text:
-        logging.error("Missing url or text")
-        return {'error': 'url and text required'}, 400
-
     try:
-        # دانلود فایل با stream
-        response = requests.get(video_url, stream=True)
-        logging.info(f"Download status: {response.status_code}, content-type: {response.headers.get('content-type')}")
+        video_url = request.args.get('url')
+        text = request.args.get('text')
+        
+        logger.info(f"Received request with URL: {video_url}, Text: {text}")
+        
+        if not video_url or not text:
+            logger.error("Missing URL or text parameter")
+            return {"error": "Missing URL or text parameter"}, 400
+
+        # دانلود ویدئو
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_video:
+            temp_video_path = temp_video.name
+        logger.info(f"Downloading video to: {temp_video_path}")
+        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        response = requests.get(video_url, headers=headers, stream=True)
+        logger.info(f"Download status: {response.status_code}, content-type: {response.headers.get('content-type')}")
+        
         if response.status_code != 200:
-            logging.error("Download failed")
-            return {'error': 'Download failed'}, 400
-        if 'video/mp4' not in response.headers.get('content-type', ''):
-            logging.error("Invalid content type")
-            return {'error': 'Invalid content type, expected video/mp4'}, 400
-
-        # ذخیره فایل
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
+            logger.error(f"Failed to download video: {response.status_code}")
+            return {"error": f"Failed to download video: {response.status_code}"}, 400
+            
+        with open(temp_video_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
-                tmp.write(chunk)
-            video_path = tmp.name
-            logging.info(f"Video saved to: {video_path}, size: {os.path.getsize(video_path)} bytes")
+                if chunk:
+                    f.write(chunk)
+        file_size = os.path.getsize(temp_video_path)
+        logger.info(f"Video saved to: {temp_video_path}, size: {file_size} bytes")
+        
+        if file_size == 0:
+            logger.error("Downloaded video is empty")
+            return {"error": "Downloaded video is empty"}, 400
 
-        # بازسازی فایل با ffmpeg برای رفع مشکل moov atom
-        fixed_video_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+        # بررسی ساختار ویدئو با ffprobe
         try:
-            subprocess.run([
-                'ffmpeg', '-i', video_path, '-c:v', 'copy', '-c:a', 'copy', '-map', '0', '-movflags', 'faststart', fixed_video_path
-            ], check=True, capture_output=True)
-            logging.info(f"Fixed video saved to: {fixed_video_path}")
-            video_path = fixed_video_path
-        except subprocess.CalledProcessError as e:
-            logging.error(f"FFmpeg error: {e.stderr.decode()}")
-            return {'error': f"FFmpeg error: {e.stderr.decode()}"}, 500
+            ffprobe_cmd = [
+                'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                '-of', 'json', temp_video_path
+            ]
+            ffprobe_result = subprocess.run(ffprobe_cmd, capture_output=True, text=True)
+            logger.info(f"ffprobe output: {ffprobe_result.stdout}")
+            if ffprobe_result.returncode != 0:
+                logger.error(f"ffprobe error: {ffprobe_result.stderr}")
+                return {"error": f"Invalid video format: {ffprobe_result.stderr}"}, 400
+        except Exception as e:
+            logger.error(f"ffprobe failed: {str(e)}")
+            return {"error": f"ffprobe failed: {str(e)}"}, 400
 
-        # خروجی
-        output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-        output_path = output_file.name
-        output_file.close()
-        logging.info(f"Output path: {output_path}")
+        # تعمیر ویدئو با ffmpeg
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_fixed:
+            temp_fixed_path = temp_fixed.name
+        ffmpeg_cmd = [
+            'ffmpeg', '-i', temp_video_path, '-c:v', 'libx264',
+            '-c:a', 'aac', '-y', temp_fixed_path
+        ]
+        try:
+            ffmpeg_result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+            logger.info(f"ffmpeg fix output: {ffmpeg_result.stdout}")
+            if ffmpeg_result.returncode != 0:
+                logger.error(f"ffmpeg fix error: {ffmpeg_result.stderr}")
+                return {"error": f"ffmpeg fix error: {ffmpeg_result.stderr}"}, 400
+        except Exception as e:
+            logger.error(f"ffmpeg fix failed: {str(e)}")
+            return {"error": f"ffmpeg fix failed: {str(e)}"}, 400
+        logger.info(f"Fixed video saved to: {temp_fixed_path}")
 
-        # پردازش ویدیو
-        clip = VideoFileClip(video_path)
-        logging.info(f"Video loaded: duration={clip.duration}, fps={clip.fps}")
-        txt = TextClip(text, fontsize=36, font="/app/fonts/Shabnam.ttf", color='white', method='caption', size=(clip.w, None))
-        txt = txt.set_duration(clip.duration).set_position(("center", "bottom"))
-        result = CompositeVideoClip([clip, txt])
-        fps = clip.fps if hasattr(clip, "fps") and clip.fps else 24
-        result.write_videofile(output_path, codec='libx264', audio=False, fps=fps, bitrate="500k")
-        logging.info(f"Video written to: {output_path}")
+        # بارگذاری ویدئو با moviepy
+        try:
+            video = VideoFileClip(temp_fixed_path)
+            logger.info(f"Video loaded: duration={video.duration}, size={video.size}")
+        except Exception as e:
+            logger.error(f"moviepy load error: {str(e)}")
+            return {"error": f"moviepy load error: {str(e)}"}, 400
 
-        @after_this_request
-        def cleanup(response):
-            try:
-                if os.path.exists(video_path):
-                    os.remove(video_path)
-                if os.path.exists(fixed_video_path):
-                    os.remove(fixed_video_path)
-                if os.path.exists(output_path):
-                    os.remove(output_path)
-                logging.info("Temporary files cleaned up")
-            except Exception as e:
-                logging.error(f"Cleanup error: {e}")
+        # ایجاد متن
+        try:
+            text_clip = TextClip(
+                text, fontsize=50, color='white', stroke_color='black',
+                stroke_width=2, font='Vazirmatn'
+            ).set_duration(video.duration).set_position(('center', 'bottom'))
+            logger.info("Text clip created")
+        except Exception as e:
+            logger.error(f"Text clip creation error: {str(e)}")
+            return {"error": f"Text clip creation error: {str(e)}"}, 400
+
+        # ترکیب ویدئو و متن
+        try:
+            final_video = CompositeVideoClip([video, text_clip])
+            logger.info("Video and text composited")
+        except Exception as e:
+            logger.error(f"Composite error: {str(e)}")
+            return {"error": f"Composite error: {str(e)}"}, 400
+
+        # ذخیره ویدئو نهایی
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_output:
+            output_path = temp_output.name
+        try:
+            final_video.write_videofile(
+                output_path, codec='libx264', audio_codec='aac',
+                bitrate='500k', fps=24, logger=None
+            )
+            logger.info(f"Video written to: {output_path}, size: {os.path.getsize(output_path)} bytes")
+        except Exception as e:
+            logger.error(f"Write video error: {str(e)}")
+            return {"error": f"Write video error: {str(e)}"}, 400
+        finally:
+            video.close()
+            final_video.close()
+
+        # ارسال فایل
+        try:
+            response = send_file(output_path, mimetype='video/mp4')
+            logger.info("Video sent to client")
             return response
-
-        logging.info(f"Sending file: {output_path}")
-        return send_file(output_path, mimetype='video/mp4')
+        except Exception as e:
+            logger.error(f"Send file error: {str(e)}")
+            return {"error": f"Send file error: {str(e)}"}, 400
+        finally:
+            # پاکسازی فایل‌های موقت
+            for path in [temp_video_path, temp_fixed_path, output_path]:
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                        logger.info(f"Deleted temp file: {path}")
+                except Exception as e:
+                    logger.error(f"Error deleting temp file {path}: {str(e)}")
 
     except Exception as e:
-        logging.error(f"Processing error: {str(e)}")
-        return {'error': str(e)}, 500
+        logger.error(f"Unexpected error: {str(e)}")
+        return {"error": f"Unexpected error: {str(e)}"}, 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=8080)
